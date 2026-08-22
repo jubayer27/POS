@@ -1,147 +1,32 @@
 <?php
-// admin/add_employee.php
 require_once '../config/db.php';
-
-$error_msg = '';
-
-// 1. Process Form Data FIRST (before any HTML is output)
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    verify_csrf();
-    $first_name = trim($_POST['first_name']);
-    $last_name = trim($_POST['last_name']);
-    $email = trim($_POST['email']);
-    $phone = trim($_POST['phone']);
-    $designation = trim($_POST['designation']);
-    $base_salary = floatval($_POST['base_salary']);
-    $joined_date = $_POST['joined_date'];
-    $status = $_POST['status'];
-
-    if (empty($first_name) || empty($last_name) || empty($designation)) {
-        $error_msg = "First Name, Last Name, and Designation are required.";
-    } else {
-        try {
-            $stmt = $pdo->prepare("INSERT INTO employees (first_name, last_name, email, phone, designation, base_salary, status, joined_date) 
-                                   VALUES (:fname, :lname, :email, :phone, :designation, :salary, :status, :joined_date)");
-
-            $stmt->execute([
-                'fname' => $first_name,
-                'lname' => $last_name,
-                'email' => $email,
-                'phone' => $phone,
-                'designation' => $designation,
-                'salary' => $base_salary,
-                'status' => $status,
-                'joined_date' => $joined_date
-            ]);
-
-            // The redirect will now work perfectly!
-            header("Location: employee.php?status=success");
-            exit;
-        } catch (PDOException $e) {
-            // Handle duplicate email errors gracefully
-            if ($e->getCode() == 23000) {
-                $error_msg = "An employee with this email already exists.";
-            } else {
-                $error_msg = "Database Error: " . $e->getMessage();
-            }
-        }
-    }
+$editingId = $editingId ?? (int)($_GET['id'] ?? 0);
+$error_msg='';$employee=[];
+$fields=['employee_number','first_name','last_name','email','personal_email','phone','alternate_phone','date_of_birth','gender','marital_status','address','city','state','postal_code','country','emergency_contact_name','emergency_contact_relationship','emergency_contact_phone','designation','department','employment_type','work_location','manager_name','base_salary','joined_date','probation_end_date','end_date','bank_name','bank_account_name','bank_account_number','bank_routing_number','tax_id','national_id','notes','status'];
+if($editingId){$s=$pdo->prepare('SELECT * FROM employees WHERE id=?');$s->execute([$editingId]);$employee=$s->fetch();if(!$employee){http_response_code(404);exit('Employee not found.');}}
+if($_SERVER['REQUEST_METHOD']==='POST'){verify_csrf();foreach($fields as $field)$employee[$field]=trim((string)($_POST[$field]??''));
+ try{
+  if($employee['first_name']===''||$employee['last_name']===''||$employee['designation']===''||$employee['joined_date']==='')throw new RuntimeException('Name, designation, and joining date are required.');
+  if((float)$employee['base_salary']<0)throw new RuntimeException('Base salary cannot be negative.');
+  if($employee['email']!==''&&!filter_var($employee['email'],FILTER_VALIDATE_EMAIL))throw new RuntimeException('Enter a valid work email address.');
+  if($employee['personal_email']!==''&&!filter_var($employee['personal_email'],FILTER_VALIDATE_EMAIL))throw new RuntimeException('Enter a valid personal email address.');
+  $nullable=['employee_number','email','personal_email','phone','alternate_phone','date_of_birth','gender','marital_status','address','city','state','postal_code','country','emergency_contact_name','emergency_contact_relationship','emergency_contact_phone','department','work_location','manager_name','probation_end_date','end_date','bank_name','bank_account_name','bank_account_number','bank_routing_number','tax_id','national_id','notes'];foreach($nullable as $f)if($employee[$f]==='')$employee[$f]=null;
+  $values=array_map(fn($f)=>$employee[$f],$fields);
+  if($editingId){$assign=implode(',',array_map(fn($f)=>"$f=?",$fields));$stmt=$pdo->prepare("UPDATE employees SET $assign WHERE id=?");$stmt->execute([...$values,$editingId]);redirect('view_employee.php?id='.$editingId.'&updated=1');}
+  $columns=implode(',',$fields);$marks=implode(',',array_fill(0,count($fields),'?'));$stmt=$pdo->prepare("INSERT INTO employees ($columns) VALUES ($marks)");$stmt->execute($values);redirect('view_employee.php?id='.$pdo->lastInsertId().'&created=1');
+ }catch(Throwable $e){$error_msg=$e instanceof PDOException&&$e->getCode()==='23000'?'Employee number or email already belongs to another employee.':$e->getMessage();}
 }
-
-// 2. NOW it is safe to include the visual layout components
-require_once 'includes/header.php';
-require_once 'includes/sidebar.php';
+function fv(array $e,string $key,string $default=''):string{return h((string)($e[$key]??$default));}
+require_once 'includes/header.php';require_once 'includes/sidebar.php';
 ?>
-
-<main class="flex-1 bg-gray-100 flex flex-col h-screen overflow-hidden">
-
-    <header class="bg-white shadow-sm px-8 py-4 flex items-center gap-4 border-b border-gray-200">
-        <a href="employee.php" class="text-gray-500 hover:text-blue-600 transition-colors">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18">
-                </path>
-            </svg>
-        </a>
-        <h2 class="text-2xl font-semibold text-gray-800">Register New Employee</h2>
-    </header>
-
-    <div class="flex-1 overflow-y-auto p-8">
-
-        <?php if ($error_msg): ?>
-            <div class="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded shadow-sm max-w-3xl">
-                <?= htmlspecialchars($error_msg) ?>
-            </div>
-        <?php endif; ?>
-
-        <div class="bg-white p-8 rounded-xl shadow-sm border border-gray-100 max-w-3xl">
-            <form action="add_employee.php" method="POST" class="space-y-6">
-                <?= csrf_field() ?>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">First Name *</label>
-                        <input type="text" name="first_name" required
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Last Name *</label>
-                        <input type="text" name="last_name" required
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
-                        <input type="email" name="email"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-                        <input type="text" name="phone"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-gray-100">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Designation / Role *</label>
-                        <input type="text" name="designation" placeholder="e.g., Software Engineer" required
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Base Salary ($) *</label>
-                        <input type="number" name="base_salary" step="0.01" min="0" value="0.00" required
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Date Joined *</label>
-                        <input type="date" name="joined_date" value="<?= date('Y-m-d') ?>" required
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Account Status *</label>
-                        <select name="status"
-                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white">
-                            <option value="active">Active</option>
-                            <option value="inactive">Inactive</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="pt-4 flex justify-end">
-                    <button type="submit"
-                        class="bg-blue-600 text-white font-semibold px-8 py-3 rounded-lg hover:bg-blue-700 transition-colors shadow-sm">
-                        Save Employee Record
-                    </button>
-                </div>
-
-            </form>
-        </div>
-    </div>
-</main>
-
-<?php require_once 'includes/footer.php'; ?>
+<main class="flex-1 h-screen overflow-y-auto app-scroll"><header class="bg-white border-b px-5 md:px-8 py-5 flex items-center gap-4 sticky top-0 z-10"><button data-sidebar-toggle class="lg:hidden text-2xl">☰</button><a href="<?=$editingId?'view_employee.php?id='.$editingId:'employee.php'?>" class="text-slate-500">←</a><div><h2 class="text-2xl font-bold"><?=$editingId?'Edit employee':'Add employee'?></h2><p class="text-sm text-slate-500">Personal, employment, emergency, and payroll information</p></div></header>
+<div class="p-5 md:p-8 max-w-6xl mx-auto"><?php if($error_msg):?><div class="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-xl mb-6"><?=h($error_msg)?></div><?php endif;?><form method="post" action="<?=$editingId?'edit_employee.php?id='.$editingId:'add_employee.php'?>" class="space-y-6"><?=csrf_field()?>
+<?php $input='mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-blue-500 outline-none';?>
+<section class="bg-white border rounded-2xl shadow-sm p-6"><div class="mb-5"><h3 class="font-bold text-lg">Personal details</h3><p class="text-sm text-slate-500">Identity and direct contact information</p></div><div class="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+<label class="text-sm font-medium">Employee number<input name="employee_number" value="<?=fv($employee,'employee_number')?>" placeholder="EMP-0001" class="<?=$input?>"></label><label class="text-sm font-medium">First name *<input name="first_name" value="<?=fv($employee,'first_name')?>" required class="<?=$input?>"></label><label class="text-sm font-medium">Last name *<input name="last_name" value="<?=fv($employee,'last_name')?>" required class="<?=$input?>"></label>
+<label class="text-sm font-medium">Work email<input type="email" name="email" value="<?=fv($employee,'email')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Personal email<input type="email" name="personal_email" value="<?=fv($employee,'personal_email')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Primary phone<input name="phone" value="<?=fv($employee,'phone')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Alternate phone<input name="alternate_phone" value="<?=fv($employee,'alternate_phone')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Date of birth<input type="date" name="date_of_birth" value="<?=fv($employee,'date_of_birth')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Gender<select name="gender" class="<?=$input?> bg-white"><option value="">Prefer not to say</option><?php foreach(['Female','Male','Non-binary','Other'] as $v):?><option <?=($employee['gender']??'')===$v?'selected':''?>><?=$v?></option><?php endforeach;?></select></label><label class="text-sm font-medium">Marital status<select name="marital_status" class="<?=$input?> bg-white"><option value="">Not specified</option><?php foreach(['Single','Married','Divorced','Widowed'] as $v):?><option <?=($employee['marital_status']??'')===$v?'selected':''?>><?=$v?></option><?php endforeach;?></select></label><label class="text-sm font-medium">National ID<input name="national_id" value="<?=fv($employee,'national_id')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Tax ID<input name="tax_id" value="<?=fv($employee,'tax_id')?>" class="<?=$input?>"></label>
+<label class="text-sm font-medium md:col-span-2 lg:col-span-3">Street address<textarea name="address" rows="2" class="<?=$input?>"><?=fv($employee,'address')?></textarea></label><label class="text-sm font-medium">City<input name="city" value="<?=fv($employee,'city')?>" class="<?=$input?>"></label><label class="text-sm font-medium">State / region<input name="state" value="<?=fv($employee,'state')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Postal code<input name="postal_code" value="<?=fv($employee,'postal_code')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Country<input name="country" value="<?=fv($employee,'country')?>" class="<?=$input?>"></label></div></section>
+<section class="bg-white border rounded-2xl shadow-sm p-6"><h3 class="font-bold text-lg mb-5">Employment</h3><div class="grid md:grid-cols-2 lg:grid-cols-3 gap-5"><label class="text-sm font-medium">Designation *<input name="designation" value="<?=fv($employee,'designation')?>" required class="<?=$input?>"></label><label class="text-sm font-medium">Department<input name="department" value="<?=fv($employee,'department')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Employment type<select name="employment_type" class="<?=$input?> bg-white"><?php foreach(['full_time'=>'Full time','part_time'=>'Part time','contract'=>'Contract','intern'=>'Intern','temporary'=>'Temporary'] as $k=>$v):?><option value="<?=$k?>" <?=($employee['employment_type']??'full_time')===$k?'selected':''?>><?=$v?></option><?php endforeach;?></select></label><label class="text-sm font-medium">Work location<input name="work_location" value="<?=fv($employee,'work_location')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Manager<input name="manager_name" value="<?=fv($employee,'manager_name')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Base salary (<?=h(setting($pdo,'base_currency','USD'))?>) *<input type="number" step="0.01" min="0" name="base_salary" value="<?=fv($employee,'base_salary','0.00')?>" required class="<?=$input?>"></label><label class="text-sm font-medium">Joined date *<input type="date" name="joined_date" value="<?=fv($employee,'joined_date',date('Y-m-d'))?>" required class="<?=$input?>"></label><label class="text-sm font-medium">Probation end<input type="date" name="probation_end_date" value="<?=fv($employee,'probation_end_date')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Employment end<input type="date" name="end_date" value="<?=fv($employee,'end_date')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Status<select name="status" class="<?=$input?> bg-white"><?php foreach(['active'=>'Active','on_leave'=>'On leave','inactive'=>'Inactive','terminated'=>'Terminated'] as $k=>$v):?><option value="<?=$k?>" <?=($employee['status']??'active')===$k?'selected':''?>><?=$v?></option><?php endforeach;?></select></label></div></section>
+<div class="grid lg:grid-cols-2 gap-6"><section class="bg-white border rounded-2xl shadow-sm p-6"><h3 class="font-bold text-lg mb-5">Emergency contact</h3><div class="space-y-4"><label class="block text-sm font-medium">Contact name<input name="emergency_contact_name" value="<?=fv($employee,'emergency_contact_name')?>" class="<?=$input?>"></label><label class="block text-sm font-medium">Relationship<input name="emergency_contact_relationship" value="<?=fv($employee,'emergency_contact_relationship')?>" class="<?=$input?>"></label><label class="block text-sm font-medium">Phone<input name="emergency_contact_phone" value="<?=fv($employee,'emergency_contact_phone')?>" class="<?=$input?>"></label></div></section>
+<section class="bg-white border rounded-2xl shadow-sm p-6"><h3 class="font-bold text-lg mb-5">Banking</h3><div class="grid sm:grid-cols-2 gap-4"><label class="text-sm font-medium">Bank name<input name="bank_name" value="<?=fv($employee,'bank_name')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Account holder<input name="bank_account_name" value="<?=fv($employee,'bank_account_name')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Account number<input name="bank_account_number" value="<?=fv($employee,'bank_account_number')?>" class="<?=$input?>"></label><label class="text-sm font-medium">Routing / branch<input name="bank_routing_number" value="<?=fv($employee,'bank_routing_number')?>" class="<?=$input?>"></label></div></section></div>
+<section class="bg-white border rounded-2xl shadow-sm p-6"><label class="block text-sm font-medium">Internal notes<textarea name="notes" rows="3" class="<?=$input?>"><?=fv($employee,'notes')?></textarea></label></section><div class="flex justify-end gap-3"><a href="<?=$editingId?'view_employee.php?id='.$editingId:'employee.php'?>" class="bg-white border px-5 py-3 rounded-lg font-semibold">Cancel</a><button class="brand-bg text-white px-7 py-3 rounded-lg font-semibold"><?=$editingId?'Update employee':'Save employee'?></button></div></form></div></main><?php require_once 'includes/footer.php';?>

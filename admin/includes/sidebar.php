@@ -8,7 +8,7 @@ $nav = [
   ['dashboard.php','Dashboard','dashboard',true], ['contacts.php','Customers & Vendors','contacts',module_enabled($pdo,'contacts')], ['items.php','Products & Services','items',module_enabled($pdo,'items')]
  ],
  'Sales' => [
-  ['invoice/create_invoice.php','Create Invoice','create_invoice',module_enabled($pdo,'invoices')], ['invoice/invoices.php','Invoices & Payments','invoices',module_enabled($pdo,'invoices')]
+  ['invoice/create_invoice.php','Create Invoice','create_invoice',module_enabled($pdo,'invoices')], ['invoice/invoices.php','Invoices & Payments','invoices',module_enabled($pdo,'invoices')], ['invoice_templates.php','Invoice Templates','invoice_templates',module_enabled($pdo,'invoices')]
  ],
  'Accounting' => [
   ['accounts.php','Bank & Cash','accounts',true], ['expenses.php','Expenses','expenses',module_enabled($pdo,'expenses')], ['debit.php','Payables','debit',module_enabled($pdo,'payables')],
@@ -29,7 +29,7 @@ function nav_url(string $url, string $path, string $invoicePath): string { retur
   <nav class="flex-1 px-3 py-4 overflow-y-auto app-scroll">
     <?php foreach($nav as $group => $links): ?>
       <p class="px-3 mt-4 mb-1 text-[11px] font-bold text-slate-600 uppercase tracking-widest"><?= h($group) ?></p>
-      <?php foreach($links as [$url,$label,$key,$enabled]): if(!$enabled) continue; $active = str_starts_with($currentPage,$key) || ($key==='employee' && in_array($currentPage,['add_employee.php','view_employee.php'],true)); ?>
+      <?php foreach($links as [$url,$label,$key,$enabled]): if(!$enabled) continue; $active = str_starts_with($currentPage,$key) || ($key==='employee' && in_array($currentPage,['add_employee.php','edit_employee.php','view_employee.php'],true)) || ($key==='payslip' && $currentPage==='view_payslip.php'); ?>
         <a href="<?= h(nav_url($url,$path,$invoicePath)) ?>" class="block px-3 py-2.5 mb-1 rounded-lg text-sm font-medium <?= $active?'nav-active':'hover:bg-slate-900 hover:text-white' ?>"><?= h($label) ?></a>
       <?php endforeach; ?>
     <?php endforeach; ?>

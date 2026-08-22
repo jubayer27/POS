@@ -1,8 +1,6 @@
 <?php
 // admin/payslip.php
 require_once '../config/db.php';
-require_once 'includes/header.php';
-require_once 'includes/sidebar.php';
 
 $success_msg = '';
 $error_msg = '';
@@ -65,6 +63,8 @@ try {
 } catch (PDOException $e) {
     die("Error fetching data: " . $e->getMessage());
 }
+require_once 'includes/header.php';
+require_once 'includes/sidebar.php';
 ?>
 
 <main class="flex-1 bg-gray-100 flex flex-col h-screen overflow-hidden">
@@ -103,7 +103,7 @@ try {
                                 class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none bg-white">
                                 <option value="" data-salary="0">-- Choose Active Employee --</option>
                                 <?php foreach ($employees as $emp): ?>
-                                    <option value="<?= $emp['id'] ?>" data-salary="<?= $emp['base_salary'] ?>">
+                                    <option value="<?= $emp['id'] ?>" data-salary="<?= $emp['base_salary'] ?>" <?= (int)($_GET['employee_id'] ?? 0) === (int)$emp['id'] ? 'selected' : '' ?>>
                                         <?= htmlspecialchars($emp['first_name'] . ' ' . $emp['last_name']) ?>
                                     </option>
                                 <?php endforeach; ?>
@@ -199,7 +199,7 @@ try {
                                                 <?php endif; ?>
                                             </td>
                                             <td class="px-6 py-4 text-sm text-center">
-                                                <button class="text-blue-500 hover:text-blue-700 font-medium">Print</button>
+                                                <a href="view_payslip.php?id=<?= $slip['id'] ?>" class="text-blue-500 hover:text-blue-700 font-medium">View / Print</a>
                                             </td>
                                         </tr>
                                     <?php endforeach; ?>
@@ -249,6 +249,10 @@ try {
         basicSalary.addEventListener('input', calculateNet);
         allowances.addEventListener('input', calculateNet);
         deductions.addEventListener('input', calculateNet);
+        if (empSelect.value) {
+            basicSalary.value = empSelect.options[empSelect.selectedIndex].getAttribute('data-salary');
+            calculateNet();
+        }
     });
 </script>
 

@@ -1,0 +1,38 @@
+# Dependencies
+/vendor/
+
+# Local environment and secrets
+/.env
+/.env.*
+!/.env.example
+
+# Runtime uploads (keep directory placeholders)
+/assets/uploads/*
+!/assets/uploads/invoice-logos/
+/assets/uploads/invoice-logos/*
+!/assets/uploads/invoice-logos/.gitkeep
+
+# Generated documents and temporary render files
+/output/pdf/*
+!/output/pdf/.gitkeep
+/tmp/*
+!/tmp/.gitkeep
+
+# Logs, caches, and test artifacts
+*.log
+/.phpunit.cache/
+/.phpunit.result.cache
+/.cache/
+/coverage/
+
+# Editor settings
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+

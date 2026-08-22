@@ -1,8 +1,8 @@
 <?php
 require_once '../config/db.php';$start=$_GET['start']??date('Y-m-01');$end=$_GET['end']??date('Y-m-d');$params=['start'=>$start,'end'=>$end];
 $queries=[
- 'Customer receipts'=>["SELECT COALESCE(SUM(amount),0) FROM payments WHERE payment_type='inbound' AND payment_date BETWEEN :start AND :end",'in'],
- 'Operating expenses'=>['SELECT COALESCE(SUM(amount),0) FROM expenses WHERE expense_date BETWEEN :start AND :end','out'],
+ 'Customer receipts'=>["SELECT COALESCE(SUM(p.amount/COALESCE(i.exchange_rate,1)),0) FROM payments p LEFT JOIN invoices i ON i.id=p.invoice_id WHERE p.payment_type='inbound' AND p.payment_date BETWEEN :start AND :end",'in'],
+ 'Operating expenses'=>['SELECT COALESCE(SUM(base_amount),0) FROM expenses WHERE expense_date BETWEEN :start AND :end','out'],
  'Cleared payables'=>["SELECT COALESCE(SUM(amount),0) FROM debits WHERE status='cleared' AND debit_date BETWEEN :start AND :end",'out'],
  'Payroll'=>["SELECT COALESCE(SUM(net_payable),0) FROM payslips WHERE status='paid' AND payment_date BETWEEN :start AND :end",'out'],
  'Investments purchased'=>['SELECT COALESCE(SUM(amount),0) FROM investments WHERE investment_date BETWEEN :start AND :end','out'],
