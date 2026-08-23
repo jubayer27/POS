@@ -1,11 +1,499 @@
 <?php
-require_once '../config/db.php';$start=$_GET['start_date']??date('Y-m-01');$end=$_GET['end_date']??date('Y-m-d');$type=$_GET['type']??'profit_loss';if(!in_array($type,['profit_loss','balance_sheet','receivables','expenses'],true))$type='profit_loss';$params=[$start,$end];$data=[];$summary=[];
-if($type==='profit_loss'){$s=$pdo->prepare("SELECT 'Revenue' label,COALESCE(SUM(amount_paid/exchange_rate),0) amount FROM invoices WHERE status<>'voided' AND issue_date BETWEEN ? AND ? UNION ALL SELECT 'Operating expenses',COALESCE(SUM(base_amount),0) FROM expenses WHERE expense_date BETWEEN ? AND ? UNION ALL SELECT 'Payroll',COALESCE(SUM(net_payable),0) FROM payslips WHERE status='paid' AND payment_date BETWEEN ? AND ? UNION ALL SELECT 'Payables paid',COALESCE(SUM(amount),0) FROM debits WHERE status='cleared' AND debit_date BETWEEN ? AND ?");$s->execute([...$params,...$params,...$params,...$params]);$data=$s->fetchAll();$revenue=(float)$data[0]['amount'];$costs=array_sum(array_map(fn($r)=>(float)$r['amount'],array_slice($data,1)));$summary=['Revenue'=>$revenue,'Total costs'=>$costs,'Net profit'=>$revenue-$costs];}
-elseif($type==='balance_sheet'){$data=$pdo->query("SELECT c.type,c.account_code,c.name,CASE WHEN c.type IN('Liability','Equity','Revenue') THEN COALESCE(SUM(j.credit-j.debit),0) ELSE COALESCE(SUM(j.debit-j.credit),0) END amount FROM chart_of_accounts c LEFT JOIN journal_lines j ON j.account_id=c.id LEFT JOIN journal_entries e ON e.id=j.journal_entry_id AND e.status='posted' GROUP BY c.id ORDER BY FIELD(c.type,'Asset','Liability','Equity','Revenue','Expense'),c.account_code")->fetchAll();foreach($data as $r)$summary[$r['type']]=($summary[$r['type']]??0)+(float)$r['amount'];}
-elseif($type==='receivables'){$s=$pdo->prepare("SELECT i.invoice_number,c.company_name,i.due_date,DATEDIFF(CURDATE(),i.due_date) days_overdue,i.grand_total-i.amount_paid amount,(i.grand_total-i.amount_paid)/i.exchange_rate base_amount FROM invoices i JOIN contacts c ON c.id=i.contact_id WHERE i.status IN('sent','unpaid','partial') AND i.issue_date BETWEEN ? AND ? ORDER BY i.due_date");$s->execute($params);$data=$s->fetchAll();$summary=['Outstanding'=>array_sum(array_column($data,'base_amount')),'Current'=>array_sum(array_column(array_filter($data,fn($r)=>$r['days_overdue']<=0),'base_amount')),'Overdue'=>array_sum(array_column(array_filter($data,fn($r)=>$r['days_overdue']>0),'base_amount'))];}
-else{$s=$pdo->prepare('SELECT category,COUNT(*) transactions,SUM(base_amount) amount FROM expenses WHERE expense_date BETWEEN ? AND ? GROUP BY category ORDER BY amount DESC');$s->execute($params);$data=$s->fetchAll();$summary=['Total expenses'=>array_sum(array_column($data,'amount')),'Categories'=>count($data),'Transactions'=>array_sum(array_column($data,'transactions'))];}
-require_once 'includes/header.php';require_once 'includes/sidebar.php';$titles=['profit_loss'=>'Profit & loss','balance_sheet'=>'Balance sheet','receivables'=>'Receivables aging','expenses'=>'Expense analysis'];
+// admin/report_genaretor.php
+require_once '../config/db.php';
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+if (!isset($_SESSION['user_id'])) {
+    header("Location: ../index.php");
+    exit;
+}
+
+$start = $_GET['start_date'] ?? date('Y-01-01');
+$end = $_GET['end_date'] ?? date('Y-m-d');
+$type = $_GET['type'] ?? 'profit_loss';
+
+if (!in_array($type, ['profit_loss', 'balance_sheet', 'receivables', 'expenses'], true)) {
+    $type = 'profit_loss';
+}
+
+$data = [];
+$summary = [];
+
+// ==========================================
+// 1. REPORT: PROFIT & LOSS (INCOME STATEMENT)
+// ==========================================
+if ($type === 'profit_loss') {
+    // A. Revenue Lines
+    $revStmt = $pdo->prepare("
+        SELECT coa.account_code, coa.name, 
+               COALESCE(SUM(jl.credit - jl.debit), 0.00) AS amount
+        FROM chart_of_accounts coa
+        LEFT JOIN journal_lines jl ON jl.account_id = coa.id
+        LEFT JOIN journal_entries je ON je.id = jl.journal_entry_id 
+             AND je.status = 'posted' 
+             AND je.entry_date BETWEEN ? AND ?
+        WHERE coa.type = 'Revenue' AND coa.is_active = 1
+        GROUP BY coa.id
+        HAVING amount != 0 OR coa.is_system_account = 1
+        ORDER BY coa.account_code ASC
+    ");
+    $revStmt->execute([$start, $end]);
+    $revenueRows = $revStmt->fetchAll();
+
+    // B. Expense Lines
+    $expStmt = $pdo->prepare("
+        SELECT coa.account_code, coa.name, coa.sub_type,
+               COALESCE(SUM(jl.debit - jl.credit), 0.00) AS amount
+        FROM chart_of_accounts coa
+        LEFT JOIN journal_lines jl ON jl.account_id = coa.id
+        LEFT JOIN journal_entries je ON je.id = jl.journal_entry_id 
+             AND je.status = 'posted' 
+             AND je.entry_date BETWEEN ? AND ?
+        WHERE coa.type = 'Expense' AND coa.is_active = 1
+        GROUP BY coa.id
+        HAVING amount != 0 OR coa.is_system_account = 1
+        ORDER BY coa.account_code ASC
+    ");
+    $expStmt->execute([$start, $end]);
+    $expenseRows = $expStmt->fetchAll();
+
+    $totalRevenue = array_sum(array_column($revenueRows, 'amount'));
+    $totalExpenses = array_sum(array_column($expenseRows, 'amount'));
+    $netProfit = $totalRevenue - $totalExpenses;
+    $margin = $totalRevenue > 0 ? ($netProfit / $totalRevenue) * 100 : 0;
+
+    $data = [
+        'revenue' => $revenueRows,
+        'expenses' => $expenseRows
+    ];
+
+    $summary = [
+        'Total Revenue' => $totalRevenue,
+        'Total Expenses' => $totalExpenses,
+        'Net Profit/Loss' => $netProfit,
+        'Net Margin' => number_format($margin, 1) . '%'
+    ];
+}
+
+// ==========================================
+// 2. REPORT: BALANCE SHEET
+// ==========================================
+elseif ($type === 'balance_sheet') {
+    // Balance Sheet is cumulative up to the selected $end date
+    $bsStmt = $pdo->prepare("
+        SELECT coa.type, coa.account_code, coa.name, coa.sub_type,
+               CASE 
+                   WHEN coa.type IN ('Liability', 'Equity') THEN COALESCE(SUM(jl.credit - jl.debit), 0.00)
+                   ELSE COALESCE(SUM(jl.debit - jl.credit), 0.00)
+               END AS balance
+        FROM chart_of_accounts coa
+        LEFT JOIN journal_lines jl ON jl.account_id = coa.id
+        LEFT JOIN journal_entries je ON je.id = jl.journal_entry_id 
+             AND je.status = 'posted' 
+             AND je.entry_date <= ?
+        WHERE coa.type IN ('Asset', 'Liability', 'Equity') AND coa.is_active = 1
+        GROUP BY coa.id
+        ORDER BY FIELD(coa.type, 'Asset', 'Liability', 'Equity'), coa.account_code ASC
+    ");
+    $bsStmt->execute([$end]);
+    $data = $bsStmt->fetchAll();
+
+    // Compute period net income to retain in equity
+    $pnlStmt = $pdo->prepare("
+        SELECT COALESCE(SUM(CASE WHEN coa.type = 'Revenue' THEN (jl.credit - jl.debit) ELSE (jl.credit - jl.debit) END), 0.00)
+        FROM journal_lines jl
+        JOIN chart_of_accounts coa ON coa.id = jl.account_id
+        JOIN journal_entries je ON je.id = jl.journal_entry_id
+        WHERE coa.type IN ('Revenue', 'Expense') 
+          AND je.status = 'posted' 
+          AND je.entry_date <= ?
+    ");
+    $pnlStmt->execute([$end]);
+    $retainedFromOperations = (float) $pnlStmt->fetchColumn();
+
+    $assets = 0;
+    $liabilities = 0;
+    $equity = 0;
+    foreach ($data as $row) {
+        if ($row['type'] === 'Asset')
+            $assets += (float) $row['balance'];
+        if ($row['type'] === 'Liability')
+            $liabilities += (float) $row['balance'];
+        if ($row['type'] === 'Equity')
+            $equity += (float) $row['balance'];
+    }
+    $equity += $retainedFromOperations;
+
+    $summary = [
+        'Total Assets' => $assets,
+        'Total Liabilities' => $liabilities,
+        'Total Equity' => $equity,
+        'Check (A - L - E)' => round($assets - ($liabilities + $equity), 2)
+    ];
+}
+
+// ==========================================
+// 3. REPORT: ACCOUNTS RECEIVABLE AGING
+// ==========================================
+elseif ($type === 'receivables') {
+    $recStmt = $pdo->prepare("
+        SELECT i.id, i.invoice_number, i.issue_date, i.due_date, i.currency_code, cur.symbol,
+               c.company_name,
+               (i.grand_total - i.amount_paid) AS amount_due,
+               ((i.grand_total - i.amount_paid) / i.exchange_rate) AS base_amount_due,
+               DATEDIFF(CURDATE(), COALESCE(i.due_date, i.issue_date)) AS days_overdue
+        FROM invoices i
+        JOIN contacts c ON c.id = i.contact_id
+        JOIN currencies cur ON cur.code = i.currency_code
+        WHERE i.status IN ('sent', 'unpaid', 'partial')
+          AND i.issue_date BETWEEN ? AND ?
+        ORDER BY days_overdue DESC, i.issue_date ASC
+    ");
+    $recStmt->execute([$start, $end]);
+    $data = $recStmt->fetchAll();
+
+    $totalOutstanding = 0;
+    $currentDue = 0;
+    $overdue30 = 0;
+    $overdue60 = 0;
+    $overdue90 = 0;
+
+    foreach ($data as $r) {
+        $base = (float) $r['base_amount_due'];
+        $days = (int) $r['days_overdue'];
+        $totalOutstanding += $base;
+
+        if ($days <= 0) {
+            $currentDue += $base;
+        } elseif ($days <= 30) {
+            $overdue30 += $base;
+        } elseif ($days <= 60) {
+            $overdue60 += $base;
+        } else {
+            $overdue90 += $base;
+        }
+    }
+
+    $summary = [
+        'Total Outstanding' => $totalOutstanding,
+        'Current (On-Time)' => $currentDue,
+        '1-30 Days Overdue' => $overdue30,
+        '31+ Days Overdue' => $overdue60 + $overdue90
+    ];
+}
+
+// ==========================================
+// 4. REPORT: EXPENSE ANALYSIS
+// ==========================================
+else {
+    $expAnalStmt = $pdo->prepare("
+        SELECT coa.name AS category, coa.account_code,
+               COUNT(jl.id) AS transactions,
+               COALESCE(SUM(jl.debit - jl.credit), 0.00) AS total_spent
+        FROM chart_of_accounts coa
+        JOIN journal_lines jl ON jl.account_id = coa.id
+        JOIN journal_entries je ON je.id = jl.journal_entry_id
+        WHERE coa.type = 'Expense' 
+          AND je.status = 'posted'
+          AND je.entry_date BETWEEN ? AND ?
+        GROUP BY coa.id
+        HAVING total_spent > 0
+        ORDER BY total_spent DESC
+    ");
+    $expAnalStmt->execute([$start, $end]);
+    $data = $expAnalStmt->fetchAll();
+
+    $totalSpent = array_sum(array_column($data, 'total_spent'));
+    $totalTrans = array_sum(array_column($data, 'transactions'));
+
+    $summary = [
+        'Total Spent' => $totalSpent,
+        'Expense Accounts' => count($data),
+        'Total Disbursals' => $totalTrans
+    ];
+}
+
+$titles = [
+    'profit_loss' => 'Income Statement (Profit & Loss)',
+    'balance_sheet' => 'Statement of Financial Position (Balance Sheet)',
+    'receivables' => 'Accounts Receivable Aging Schedule',
+    'expenses' => 'Operational Expense Analysis'
+];
+
+require_once 'includes/header.php';
+require_once 'includes/sidebar.php';
 ?>
-<main class="flex-1 h-screen overflow-y-auto app-scroll"><header class="bg-white border-b px-5 md:px-8 py-5 flex justify-between items-center sticky top-0 z-10 print:hidden"><div class="flex items-center gap-4"><button data-sidebar-toggle class="lg:hidden text-2xl">☰</button><div><h2 class="text-2xl font-bold">Financial reports</h2><p class="text-sm text-slate-500">Generate management-ready statements</p></div></div><button onclick="window.print()" class="bg-slate-900 text-white px-4 py-2 rounded-lg">Print / PDF</button></header><div class="p-5 md:p-8 max-w-6xl mx-auto"><form class="bg-white border rounded-xl p-4 flex flex-wrap gap-4 items-end mb-6 print:hidden"><label class="text-sm">Report<select name="type" class="block border rounded-lg px-3 py-2 bg-white"><?php foreach($titles as $k=>$v):?><option value="<?=$k?>" <?=$type===$k?'selected':''?>><?=h($v)?></option><?php endforeach;?></select></label><label class="text-sm">From<input type="date" name="start_date" value="<?=h($start)?>" class="block border rounded-lg px-3 py-2"></label><label class="text-sm">To<input type="date" name="end_date" value="<?=h($end)?>" class="block border rounded-lg px-3 py-2"></label><button class="brand-bg text-white px-5 py-2 rounded-lg">Generate</button></form>
-<section id="report" class="bg-white border rounded-2xl p-7 md:p-10"><div class="text-center border-b pb-6"><h1 class="text-2xl font-black"><?=h(setting($pdo,'company_name','AccountsBase'))?></h1><h2 class="text-xl mt-2"><?=h($titles[$type])?></h2><p class="text-sm text-slate-500"><?=h(date('M j, Y',strtotime($start)))?> – <?=h(date('M j, Y',strtotime($end)))?></p></div><div class="grid sm:grid-cols-3 gap-4 my-7"><?php foreach($summary as $label=>$value):?><div class="bg-slate-50 border rounded-xl p-4 text-center"><p class="text-xs text-slate-500 uppercase font-bold"><?=h($label)?></p><p class="text-xl font-black mt-1"><?=is_numeric($value)&&!in_array($label,['Categories','Transactions'],true)?money($pdo,$value):h((string)$value)?></p></div><?php endforeach;?></div>
-<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-slate-900 text-white"><tr><?php if($type==='profit_loss'):?><th class="text-left p-3">Line item</th><th class="text-right p-3">Amount</th><?php elseif($type==='balance_sheet'):?><th class="text-left p-3">Type</th><th class="text-left p-3">Code</th><th class="text-left p-3">Account</th><th class="text-right p-3">Balance</th><?php elseif($type==='receivables'):?><th class="text-left p-3">Invoice</th><th class="text-left p-3">Customer</th><th class="text-left p-3">Due date</th><th class="text-right p-3">Age</th><th class="text-right p-3">Balance</th><?php else:?><th class="text-left p-3">Category</th><th class="text-right p-3">Transactions</th><th class="text-right p-3">Amount</th><?php endif;?></tr></thead><tbody class="divide-y"><?php foreach($data as $r):?><tr><?php if($type==='profit_loss'):?><td class="p-3"><?=h($r['label'])?></td><td class="p-3 text-right font-semibold"><?=money($pdo,$r['amount'])?></td><?php elseif($type==='balance_sheet'):?><td class="p-3"><?=h($r['type'])?></td><td class="p-3 font-mono"><?=h($r['account_code'])?></td><td class="p-3"><?=h($r['name'])?></td><td class="p-3 text-right font-semibold"><?=money($pdo,$r['amount'])?></td><?php elseif($type==='receivables'):?><td class="p-3"><?=h($r['invoice_number'])?></td><td class="p-3"><?=h($r['company_name'])?></td><td class="p-3"><?=h($r['due_date'])?></td><td class="p-3 text-right"><?=max(0,(int)$r['days_overdue'])?> days</td><td class="p-3 text-right font-semibold"><?=money($pdo,$r['amount'])?></td><?php else:?><td class="p-3"><?=h($r['category'])?></td><td class="p-3 text-right"><?=h((string)$r['transactions'])?></td><td class="p-3 text-right font-semibold"><?=money($pdo,$r['amount'])?></td><?php endif;?></tr><?php endforeach;?></tbody></table></div><div class="hidden print:flex justify-between mt-20 pt-10"><span class="border-t w-44 text-center pt-2">Prepared by</span><span class="border-t w-44 text-center pt-2">Authorized by</span></div></section></div></main><style>@media print{aside,header,.print\:hidden{display:none!important}main{height:auto!important;overflow:visible!important}#report{border:0;padding:0}}</style><?php require_once 'includes/footer.php';?>
+
+<main class="flex-1 h-screen overflow-y-auto app-scroll bg-slate-100">
+    
+    <!-- Action Header -->
+    <header class="bg-white border-b px-5 md:px-8 py-5 flex justify-between items-center sticky top-0 z-10 shadow-sm print:hidden">
+        <div class="flex items-center gap-4">
+            <button data-sidebar-toggle class="lg:hidden text-2xl text-slate-700">☰</button>
+            <div>
+                <h2 class="text-2xl font-bold text-slate-800">Financial Reporting Engine</h2>
+                <p class="text-xs text-slate-500">General Ledger compliance, P&L, balance sheets, and receivables auditing</p>
+            </div>
+        </div>
+        <button onclick="window.print()" class="bg-slate-900 hover:bg-slate-800 text-white font-semibold px-4 py-2 rounded-lg text-sm transition-colors flex items-center gap-1.5 shadow-sm">
+            🖨 Print / Export PDF
+        </button>
+    </header>
+
+    <div class="p-5 md:p-8 max-w-6xl mx-auto space-y-6">
+        
+        <!-- Filter Controls -->
+        <form method="get" class="bg-white border border-slate-200 rounded-2xl p-5 flex flex-wrap gap-4 items-end shadow-sm print:hidden">
+            <div>
+                <label class="block text-xs font-bold uppercase text-slate-600 mb-1">Report Module</label>
+                <select name="type" class="border border-slate-300 rounded-lg px-3 py-2 bg-white text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                    <?php foreach ($titles as $k => $v): ?>
+                            <option value="<?= $k ?>" <?= $type === $k ? 'selected' : '' ?>><?= h($v) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs font-bold uppercase text-slate-600 mb-1">Start Date</label>
+                <input type="date" name="start_date" value="<?= h($start) ?>" class="border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div>
+                <label class="block text-xs font-bold uppercase text-slate-600 mb-1">End Date</label>
+                <input type="date" name="end_date" value="<?= h($end) ?>" class="border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2.5 rounded-lg text-sm transition-colors shadow-sm">
+                Generate Statement
+            </button>
+        </form>
+
+        <!-- Printable Document Container -->
+        <section id="report" class="bg-white border border-slate-200 rounded-2xl p-8 md:p-12 shadow-sm space-y-8">
+            
+            <!-- Document Title & Header -->
+            <div class="text-center border-b border-slate-200 pb-6">
+                <h1 class="text-3xl font-black text-slate-900 tracking-tight"><?= h(setting($pdo, 'company_name', 'Acme Corporation')) ?></h1>
+                <h2 class="text-lg font-bold text-slate-700 mt-1 uppercase tracking-wider"><?= h($titles[$type]) ?></h2>
+                <p class="text-xs text-slate-500 mt-1">
+                    <?= $type === 'balance_sheet' ? 'As of ' . date('F j, Y', strtotime($end)) : 'For Period: ' . date('M j, Y', strtotime($start)) . ' — ' . date('M j, Y', strtotime($end)) ?>
+                </p>
+                <span class="inline-block mt-2 text-[11px] font-semibold px-3 py-0.5 bg-slate-100 text-slate-600 rounded-full">
+                    Currency: <?= h(setting($pdo, 'base_currency', 'USD')) ?>
+                </span>
+            </div>
+
+            <!-- Summary KPI Cards -->
+            <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <?php foreach ($summary as $lbl => $val): ?>
+                        <div class="bg-slate-50 border border-slate-200/80 rounded-xl p-4 text-center">
+                            <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400"><?= h($lbl) ?></p>
+                            <p class="text-xl font-black text-slate-900 mt-1">
+                                <?= is_numeric($val) ? money($pdo, $val) : h((string) $val) ?>
+                            </p>
+                        </div>
+                <?php endforeach; ?>
+            </div>
+
+            <!-- Report Body -->
+            <div class="overflow-x-auto">
+                
+                <!-- 1. P&L Layout -->
+                <?php if ($type === 'profit_loss'): ?>
+                        <div class="space-y-6">
+                            <!-- Revenue Table -->
+                            <div>
+                                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Operating Revenue (4000s)</h3>
+                                <table class="w-full text-sm border-collapse">
+                                    <thead class="bg-slate-50 text-slate-600 text-xs border-b">
+                                        <tr>
+                                            <th class="p-3 text-left font-semibold">Account Code</th>
+                                            <th class="p-3 text-left font-semibold">Account Name</th>
+                                            <th class="p-3 text-right font-semibold">Total Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        <?php foreach ($data['revenue'] as $r): ?>
+                                                <tr>
+                                                    <td class="p-3 font-mono text-xs text-slate-500"><?= h($r['account_code']) ?></td>
+                                                    <td class="p-3 font-medium text-slate-800"><?= h($r['name']) ?></td>
+                                                    <td class="p-3 text-right font-semibold text-slate-900"><?= money($pdo, $r['amount']) ?></td>
+                                                </tr>
+                                        <?php endforeach; ?>
+                                        <tr class="bg-slate-50 font-bold border-t">
+                                            <td colspan="2" class="p-3 text-slate-700">Total Operating Revenue</td>
+                                            <td class="p-3 text-right text-emerald-600"><?= money($pdo, $summary['Total Revenue']) ?></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Expenses Table -->
+                            <div>
+                                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Operating & Administrative Expenses (5000s)</h3>
+                                <table class="w-full text-sm border-collapse">
+                                    <thead class="bg-slate-50 text-slate-600 text-xs border-b">
+                                        <tr>
+                                            <th class="p-3 text-left font-semibold">Account Code</th>
+                                            <th class="p-3 text-left font-semibold">Account Name</th>
+                                            <th class="p-3 text-right font-semibold">Total Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-slate-100">
+                                        <?php foreach ($data['expenses'] as $r): ?>
+                                                <tr>
+                                                    <td class="p-3 font-mono text-xs text-slate-500"><?= h($r['account_code']) ?></td>
+                                                    <td class="p-3 font-medium text-slate-800"><?= h($r['name']) ?></td>
+                                                    <td class="p-3 text-right font-semibold text-slate-900"><?= money($pdo, $r['amount']) ?></td>
+                                                </tr>
+                                        <?php endforeach; ?>
+                                        <tr class="bg-slate-50 font-bold border-t">
+                                            <td colspan="2" class="p-3 text-slate-700">Total Operating Expenses</td>
+                                            <td class="p-3 text-right text-rose-600"><?= money($pdo, $summary['Total Expenses']) ?></td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- Net Profit / Loss Box -->
+                            <div class="p-4 rounded-xl border flex justify-between items-center text-lg font-black <?= $summary['Net Profit/Loss'] >= 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-900' ?>">
+                                <span>Net Operating Income (Profit / Loss)</span>
+                                <span><?= money($pdo, $summary['Net Profit/Loss']) ?></span>
+                            </div>
+                        </div>
+
+                    <!-- 2. Balance Sheet Layout -->
+                <?php elseif ($type === 'balance_sheet'): ?>
+                        <table class="w-full text-sm border-collapse">
+                            <thead class="bg-slate-900 text-white text-xs">
+                                <tr>
+                                    <th class="p-3 text-left font-semibold">Classification</th>
+                                    <th class="p-3 text-left font-semibold">Code</th>
+                                    <th class="p-3 text-left font-semibold">Account Title</th>
+                                    <th class="p-3 text-right font-semibold">Net Balance</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <?php foreach ($data as $r): ?>
+                                        <tr>
+                                            <td class="p-3">
+                                                <span class="px-2 py-0.5 rounded text-xs font-bold 
+                                            <?= $r['type'] === 'Asset' ? 'bg-blue-100 text-blue-800' : ($r['type'] === 'Liability' ? 'bg-purple-100 text-purple-800' : 'bg-emerald-100 text-emerald-800') ?>">
+                                                    <?= h($r['type']) ?>
+                                                </span>
+                                            </td>
+                                            <td class="p-3 font-mono text-xs text-slate-500"><?= h($r['account_code']) ?></td>
+                                            <td class="p-3 font-medium text-slate-800"><?= h($r['name']) ?></td>
+                                            <td class="p-3 text-right font-bold text-slate-900"><?= money($pdo, $r['balance']) ?></td>
+                                        </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+
+                    <!-- 3. Receivables Aging Layout -->
+                <?php elseif ($type === 'receivables'): ?>
+                        <table class="w-full text-sm border-collapse">
+                            <thead class="bg-slate-900 text-white text-xs">
+                                <tr>
+                                    <th class="p-3 text-left font-semibold">Invoice #</th>
+                                    <th class="p-3 text-left font-semibold">Customer Name</th>
+                                    <th class="p-3 text-left font-semibold">Due Date</th>
+                                    <th class="p-3 text-center font-semibold">Aging Status</th>
+                                    <th class="p-3 text-right font-semibold">Outstanding Due</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <?php foreach ($data as $r):
+                                    $days = (int) $r['days_overdue'];
+                                    ?>
+                                        <tr>
+                                            <td class="p-3 font-bold text-blue-600"><?= h($r['invoice_number']) ?></td>
+                                            <td class="p-3 font-medium text-slate-800"><?= h($r['company_name']) ?></td>
+                                            <td class="p-3 text-xs text-slate-500"><?= !empty($r['due_date']) ? date('M j, Y', strtotime($r['due_date'])) : 'On Demand' ?></td>
+                                            <td class="p-3 text-center">
+                                                <?php if ($days <= 0): ?>
+                                                        <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">Current</span>
+                                                <?php elseif ($days <= 30): ?>
+                                                        <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800">1-30 Days</span>
+                                                <?php else: ?>
+                                                        <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-100 text-rose-800"><?= $days ?> Days Overdue</span>
+                                                <?php endif; ?>
+                                            </td>
+                                            <td class="p-3 text-right font-black text-slate-900"><?= money($pdo, $r['base_amount_due']) ?></td>
+                                        </tr>
+                                <?php endforeach; ?>
+                                <?php if (!$data): ?>
+                                        <tr>
+                                            <td colspan="5" class="p-8 text-center text-slate-400">All customer accounts are settled with zero outstanding receivables.</td>
+                                        </tr>
+                                <?php endif; ?>
+                            </tbody>
+                        </table>
+
+                    <!-- 4. Expense Analysis Layout -->
+                <?php else: ?>
+                        <table class="w-full text-sm border-collapse">
+                            <thead class="bg-slate-900 text-white text-xs">
+                                <tr>
+                                    <th class="p-3 text-left font-semibold">Account / Category</th>
+                                    <th class="p-3 text-center font-semibold">GL Code</th>
+                                    <th class="p-3 text-center font-semibold">Disbursals Logged</th>
+                                    <th class="p-3 text-right font-semibold">Total Expensed</th>
+                                    <th class="p-3 text-right font-semibold">Share of Outflow</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <?php foreach ($data as $r):
+                                    $pct = $summary['Total Spent'] > 0 ? ($r['total_spent'] / $summary['Total Spent']) * 100 : 0;
+                                    ?>
+                                        <tr>
+                                            <td class="p-3 font-bold text-slate-800"><?= h($r['category']) ?></td>
+                                            <td class="p-3 text-center font-mono text-xs text-slate-500"><?= h($r['account_code']) ?></td>
+                                            <td class="p-3 text-center text-slate-600"><?= (int) $r['transactions'] ?></td>
+                                            <td class="p-3 text-right font-black text-slate-900"><?= money($pdo, $r['total_spent']) ?></td>
+                                            <td class="p-3 text-right text-xs font-bold text-slate-500"><?= number_format($pct, 1) ?>%</td>
+                                        </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                <?php endif; ?>
+
+            </div>
+
+            <!-- Sign-Off Section (Print view only) -->
+            <div class="hidden print:flex justify-between items-center mt-20 pt-10 border-t border-slate-300 text-xs">
+                <div class="text-center w-52">
+                    <div class="border-b border-slate-400 pb-8 mb-2"></div>
+                    <span class="font-bold text-slate-700 uppercase">Prepared By (Finance)</span>
+                </div>
+                <div class="text-center w-52">
+                    <div class="border-b border-slate-400 pb-8 mb-2"></div>
+                    <span class="font-bold text-slate-700 uppercase">Authorized Officer</span>
+                </div>
+            </div>
+
+        </section>
+
+    </div>
+</main>
+
+<style>
+@media print {
+    aside, header, #sidebarOverlay, form, .print\:hidden {
+        display: none !important;
+    }
+    main {
+        height: auto !important;
+        overflow: visible !important;
+        background: white !important;
+        padding: 0 !important;
+    }
+    #report {
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+    }
+}
+</style>
+
+<?php require_once 'includes/footer.php'; ?>
